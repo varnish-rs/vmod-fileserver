@@ -200,10 +200,8 @@ fn build_mime_dict(path: &str) -> Result<HashMap<String, String>, Box<dyn Error>
         let l = line.map_err(|e| e.to_string())?;
         let mut ws_it = l.split_whitespace();
 
-        let mime = match ws_it.next() {
-            None => continue,
-            Some(m) => m,
-        };
+        let Some(mime) = ws_it.next() else { continue };
+
         // ignore comments
         if mime.chars().next().unwrap_or('-') == '#' {
             continue;
