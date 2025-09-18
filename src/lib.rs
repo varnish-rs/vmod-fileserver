@@ -86,7 +86,7 @@ struct FileBackend {
 
 // silly helper until varnish-rs provides something more ergonomic
 #[expect(clippy::needless_pass_by_value)]
-fn sob_helper(sob: StrOrBytes) -> &str {
+fn sob_helper(sob: StrOrBytes<'_>) -> &str {
     match sob {
         StrOrBytes::Bytes(_) => panic!("{sob:?} isn't a string"),
         StrOrBytes::Utf8(s) => s,
