@@ -1,5 +1,5 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::error::Error;
 use std::fs::{File, Metadata};
 use std::hash::{Hash, Hasher};
@@ -21,15 +21,15 @@ mod fileserver {
     use varnish::ffi::VCL_BACKEND;
     use varnish::vcl::{Backend, Ctx};
 
-    use super::root;
-    use crate::{build_mime_dict, FileBackend};
+    use super::file_backend;
+    use crate::{FileBackend, build_mime_dict};
 
     // Rust implementation of the VCC object, it mirrors what happens in C, except
     // for a couple of points:
     // - we create and return a Rust object, instead of a void pointer
-    // - new() returns a Result, leaving the error handling to varnish-rs
-    impl root {
-        pub fn new(
+    // - root() returns a Result, leaving the error handling to varnish-rs
+    impl file_backend {
+        pub fn root(
             ctx: &mut Ctx,
             #[vcl_name] name: &str,
             path: &str,
@@ -62,20 +62,20 @@ mod fileserver {
                 },
                 false,
             )?;
-            Ok(root { backend })
+            Ok(file_backend { backend })
         }
 
         pub unsafe fn backend(&self, _ctx: &Ctx) -> VCL_BACKEND {
-            self.backend.vcl_ptr()
+            unsafe { self.backend.as_ref().vcl_ptr() }
         }
     }
 }
 
-// root is the Rust implement of the VCC definition (in vmod.vcc)
+// file_backend is the Rust implement of the VCC definition (in vmod.vcc)
 // it only contains backend, which wraps a FileBackend, and
 // handles response body creation with a FileTransfer
 #[allow(non_camel_case_types)]
-struct root {
+struct file_backend {
     backend: Backend<FileBackend, FileTransfer>,
 }
 
@@ -126,12 +126,11 @@ impl VclBackend<FileTransfer> for FileBackend {
             if inm == etag || (inm.starts_with("W/") && inm[2..] == etag) {
                 is_304 = true;
             }
-        } else if let Some(ims) = bereq.header("if-modified-since").map(sob_helper) {
-            if let Ok(t) = DateTime::parse_from_rfc2822(ims) {
-                if t > modified {
-                    is_304 = true;
-                }
-            }
+        } else if let Some(ims) = bereq.header("if-modified-since").map(sob_helper)
+            && let Ok(t) = DateTime::parse_from_rfc2822(ims)
+            && t >= modified
+        {
+            is_304 = true;
         }
 
         beresp.set_proto("HTTP/1.1")?;
@@ -168,10 +167,10 @@ impl VclBackend<FileTransfer> for FileBackend {
         // we only care about content-type if there's content
         if cl > 0 {
             // we need both and extension and a mime database
-            if let (Some(ext), Some(h)) = (path.extension(), self.mimes.as_ref()) {
-                if let Some(ct) = h.get(ext.to_string_lossy().as_ref()) {
-                    beresp.set_header("content-type", ct)?;
-                }
+            if let (Some(ext), Some(h)) = (path.extension(), self.mimes.as_ref())
+                && let Some(ct) = h.get(ext.to_string_lossy().as_ref())
+            {
+                beresp.set_header("content-type", ct)?;
             }
         }
         Ok(transfer)
