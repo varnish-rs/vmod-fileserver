@@ -1,0 +1,33 @@
+varnishtest "query string is ignored when resolving a file on disk"
+
+shell {
+	echo -n "foo" > ${tmpdir}/foo
+}
+
+varnish v1 -vcl {
+	import fileserver from "${vmod}";
+
+	backend default none;
+
+	sub vcl_init {
+		new www = fileserver.root("${tmpdir}");
+	}
+
+	sub vcl_recv {
+		set req.backend_hint = www.backend();
+	}
+} -start
+
+client c1 {
+	txreq -url "/foo?v=123"
+	rxresp
+	expect resp.body == "foo"
+
+	txreq -url "/foo?"
+	rxresp
+	expect resp.body == "foo"
+
+	txreq -url "/foo?v=123?extra=456"
+	rxresp
+	expect resp.body == "foo"
+} -run
