@@ -1,6 +1,6 @@
 [package]
 name = "vmod_fileserver"
-version = "0.0.11"
+version = "0.0.12"
 rust-version = "1.90.0"
 edition = "2024"
 license = "BSD-3-Clause"
