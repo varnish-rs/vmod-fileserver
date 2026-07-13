@@ -71,7 +71,7 @@ mod fileserver {
     }
 }
 
-// file_backend is the Rust implement of the VCC definition (in vmod.vcc)
+// file_backend public functions
 // it only contains backend, which wraps a FileBackend, and
 // handles response body creation with a FileTransfer
 #[allow(non_camel_case_types)]
