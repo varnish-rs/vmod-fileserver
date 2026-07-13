@@ -71,7 +71,7 @@ mod fileserver {
     }
 }
 
-// file_backend is the Rust implement of the VCC definition (in vmod.vcc)
+// file_backend public functions
 // it only contains backend, which wraps a FileBackend, and
 // handles response body creation with a FileTransfer
 #[allow(non_camel_case_types)]
@@ -99,8 +99,13 @@ impl VclBackend<FileTransfer> for FileBackend {
         let bereq = ctx.http_bereq.as_ref().unwrap();
         let bereq_url = sob_helper(bereq.url().unwrap());
 
-        // combine root and url into something that's hopefully safe
-        let path = assemble_file_path(&self.path, bereq_url);
+        // combine root and url into something that's hopefully safe. The query
+        // string (if any) is not part of the filesystem path -- nginx and Apache
+        // both split path from query at the HTTP-parsing layer and never consult
+        // the query string for static-file lookups, so a request like
+        // "/app.js?v=123" (a common cache-busting pattern) must still resolve to
+        // "/app.js" on disk, not literally fail to find a file named "app.js?v=123".
+        let path = assemble_file_path(&self.path, strip_query(bereq_url));
         ctx.log(
             LogTag::Debug,
             format!("fileserver: file on disk: {}", path.display()),
@@ -218,6 +223,12 @@ fn build_mime_dict(path: &str) -> Result<HashMap<String, String>, Box<dyn Error>
     Ok(h)
 }
 
+// strip a "?query=string" suffix, if any, from a request URL before it's used
+// as a filesystem path
+fn strip_query(url: &str) -> &str {
+    url.split_once('?').map_or(url, |(path, _)| path)
+}
+
 // given root_path and url, assemble the two so that the final path is still
 // inside root_path
 // There's no access to the file system, and therefore no link resolution
@@ -303,6 +314,33 @@ mod tests {
     #[test]
     fn current() {
         tc("/foo/bar", "/bar/././qux", "/foo/bar/bar/qux");
+    }
+
+    use super::strip_query;
+
+    #[test]
+    fn strip_query_removes_suffix() {
+        assert_eq!(strip_query("/app.js?v=123"), "/app.js");
+    }
+
+    #[test]
+    fn strip_query_no_query_string() {
+        assert_eq!(strip_query("/app.js"), "/app.js");
+    }
+
+    #[test]
+    fn strip_query_empty_query_string() {
+        assert_eq!(strip_query("/app.js?"), "/app.js");
+    }
+
+    #[test]
+    fn strip_query_only_query_string() {
+        assert_eq!(strip_query("?v=123"), "");
+    }
+
+    #[test]
+    fn strip_query_multiple_question_marks() {
+        assert_eq!(strip_query("/app.js?v=123?extra=456"), "/app.js");
     }
 
     use super::build_mime_dict;
