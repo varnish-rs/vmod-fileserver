@@ -119,7 +119,18 @@ impl VclBackend<FileTransfer> for FileBackend {
         let beresp = ctx.http_beresp.as_mut().unwrap();
 
         // open the file and get some metadata
-        let f = File::open(&path).map_err(|e| e.to_string())?;
+        let f = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                beresp.set_status(404);
+                return Ok(None);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                beresp.set_status(403);
+                return Ok(None);
+            }
+            Err(e) => return Err(e.to_string().into()),
+        };
         let metadata: Metadata = f.metadata().map_err(|e| e.to_string())?;
         let cl = metadata.len();
         let modified: DateTime<Utc> = DateTime::from(metadata.modified().unwrap());
