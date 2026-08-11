@@ -28,4 +28,8 @@ client c1 {
 	txreq -url "/foo"
 	rxresp
 	expect resp.status == 403
+
+	txreq -method "POST" -url "/nonexistent"
+	rxresp
+	expect resp.status == 405
 } -run

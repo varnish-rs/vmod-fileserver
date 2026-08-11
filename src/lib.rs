@@ -118,6 +118,14 @@ impl VclBackend<FileTransfer> for FileBackend {
         // let's start building our response
         let beresp = ctx.http_beresp.as_mut().unwrap();
 
+        // reject unsupported methods before touching the filesystem
+        let method = bereq.method().map(sob_helper);
+        if method != Some("HEAD") && method != Some("GET") {
+            // we are fairly strict in what method we accept
+            beresp.set_status(405);
+            return Ok(None);
+        }
+
         // open the file and get some metadata
         let f = match File::open(&path) {
             Ok(f) => f,
@@ -151,12 +159,7 @@ impl VclBackend<FileTransfer> for FileBackend {
 
         beresp.set_proto("HTTP/1.1")?;
         let mut transfer = None;
-        let method = bereq.method().map(sob_helper);
-        if method != Some("HEAD") && method != Some("GET") {
-            // we are fairly strict in what method we accept
-            beresp.set_status(405);
-            return Ok(None);
-        } else if is_304 {
+        if is_304 {
             // 304 will save us some bandwidth
             beresp.set_status(304);
         } else {
