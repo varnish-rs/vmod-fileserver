@@ -1,0 +1,35 @@
+varnishtest "missing or unreadable files return 404/403 instead of a generic backend error"
+
+shell {
+	echo -n "foo" > ${tmpdir}/foo
+	chmod 000 ${tmpdir}/foo
+}
+
+varnish v1 -vcl {
+	import fileserver from "${vmod}";
+
+	backend default none;
+
+	sub vcl_init {
+		new www = fileserver.root("${tmpdir}");
+	}
+
+	sub vcl_recv {
+		set req.backend_hint = www.backend();
+		return (pass);
+	}
+} -start
+
+client c1 {
+	txreq -url "/nonexistent"
+	rxresp
+	expect resp.status == 404
+
+	txreq -url "/foo"
+	rxresp
+	expect resp.status == 403
+
+	txreq -method "POST" -url "/nonexistent"
+	rxresp
+	expect resp.status == 405
+} -run
