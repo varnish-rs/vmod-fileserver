@@ -1,0 +1,30 @@
+varnishtest "duplicate extensions in mime.types use the last defined value"
+
+shell {
+	echo -n "foo" > ${tmpdir}/foo.pdf
+
+	cat << EOF > ${tmpdir}/mimes
+application/pdf pdf
+application/text pdf
+EOF
+}
+
+varnish v1 -vcl {
+	import fileserver from "${vmod}";
+
+	backend default none;
+
+	sub vcl_init {
+		new www = fileserver.root("${tmpdir}", "${tmpdir}/mimes");
+	}
+
+	sub vcl_recv {
+		set req.backend_hint = www.backend();
+	}
+} -start
+
+client c1 {
+	txreq -url "/foo.pdf"
+	rxresp
+	expect resp.http.content-type == "application/text"
+} -run

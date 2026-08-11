@@ -211,12 +211,6 @@ fn build_mime_dict(path: &str) -> Result<HashMap<String, String>, Box<dyn Error>
             continue;
         }
         for ext in ws_it {
-            if let Some(old_mime) = h.get(ext) {
-                return Err(format!(
-                    "fileserver: error, in {path}, extension {ext} appears to have two types ({old_mime} and {mime})",
-                )
-                .into());
-            }
             h.insert(ext.to_string(), mime.to_string());
         }
     }
@@ -345,8 +339,10 @@ mod tests {
 
     use super::build_mime_dict;
     #[test]
-    fn bad() {
-        assert_eq!(build_mime_dict("tests/bad1.types").err().unwrap().to_string(), "fileserver: error, in tests/bad1.types, extension txt appears to have two types (application/pdf and application/text)".to_string());
+    fn duplicate_extension_uses_last_value() {
+        let h = build_mime_dict("tests/dup1.types").unwrap();
+        assert_eq!(h["txt"], "application/text");
+        assert_eq!(h["pdf"], "application/pdf");
     }
 
     #[test]
