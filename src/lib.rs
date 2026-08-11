@@ -125,6 +125,7 @@ impl VclBackend<FileTransfer> for FileBackend {
             beresp.set_status(405);
             return Ok(None);
         }
+        let is_get = method == Some("GET");
 
         // open the file and get some metadata
         let f = match File::open(&path) {
@@ -141,8 +142,24 @@ impl VclBackend<FileTransfer> for FileBackend {
         };
         let metadata: Metadata = f.metadata().map_err(|e| e.to_string())?;
         let cl = metadata.len();
-        let modified_raw = metadata.modified().map_err(|e| e.to_string())?;
-        let modified: DateTime<Utc> = DateTime::from(modified_raw);
+        let modified_raw = match metadata.modified() {
+            Ok(t) => Some(t),
+            Err(e) => {
+                ctx.log(
+                    LogTag::Error,
+                    format!(
+                        "fileserver: could not read mtime for {}: {e}",
+                        path.display()
+                    ),
+                );
+                None
+            }
+        };
+        // the ctx.log() call above needs exclusive access to ctx, so bereq/beresp
+        // (borrowed from ctx fields) have to be re-fetched afterwards
+        let bereq = ctx.http_bereq.as_ref().unwrap();
+        let beresp = ctx.http_beresp.as_mut().unwrap();
+        let modified: Option<DateTime<Utc>> = modified_raw.map(DateTime::from);
         let etag = generate_etag(&metadata, modified_raw);
 
         // can we avoid sending a body?
@@ -151,7 +168,8 @@ impl VclBackend<FileTransfer> for FileBackend {
             if inm == etag || (inm.starts_with("W/") && inm[2..] == etag) {
                 is_304 = true;
             }
-        } else if let Some(ims) = bereq.header("if-modified-since").map(sob_helper)
+        } else if let Some(modified) = modified
+            && let Some(ims) = bereq.header("if-modified-since").map(sob_helper)
             && let Ok(t) = DateTime::parse_from_rfc2822(ims)
             && t >= modified
         {
@@ -168,7 +186,7 @@ impl VclBackend<FileTransfer> for FileBackend {
             // it's a GET we need to add the VFP to the pipeline
             // and add a BackendResp to the priv1 field
             beresp.set_status(200);
-            if method == Some("GET") {
+            if is_get {
                 transfer = Some(FileTransfer {
                     // prevent reading more than expected
                     reader: BufReader::new(f).take(cl),
@@ -179,10 +197,12 @@ impl VclBackend<FileTransfer> for FileBackend {
         // set all the headers we can, including the content-type if we can
         beresp.set_header("content-length", &format!("{cl}"))?;
         beresp.set_header("etag", &etag)?;
-        beresp.set_header(
-            "last-modified",
-            &modified.format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
-        )?;
+        if let Some(modified) = modified {
+            beresp.set_header(
+                "last-modified",
+                &modified.format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
+            )?;
+        }
 
         // we only care about content-type if there's content
         if cl > 0 {
@@ -272,12 +292,12 @@ fn assemble_file_path(root_path: &str, url: &str) -> PathBuf {
     PathBuf::from(complete_path)
 }
 
-fn generate_etag(metadata: &Metadata, modified: SystemTime) -> String {
+fn generate_etag(metadata: &Metadata, modified: Option<SystemTime>) -> String {
     #[derive(Hash)]
     struct ShortMd {
         inode: u64,
         size: u64,
-        modified: SystemTime,
+        modified: Option<SystemTime>,
     }
 
     let smd = ShortMd {
