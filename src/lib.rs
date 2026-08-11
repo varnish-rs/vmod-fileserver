@@ -141,8 +141,9 @@ impl VclBackend<FileTransfer> for FileBackend {
         };
         let metadata: Metadata = f.metadata().map_err(|e| e.to_string())?;
         let cl = metadata.len();
-        let modified: DateTime<Utc> = DateTime::from(metadata.modified().unwrap());
-        let etag = generate_etag(&metadata);
+        let modified_raw = metadata.modified().map_err(|e| e.to_string())?;
+        let modified: DateTime<Utc> = DateTime::from(modified_raw);
+        let etag = generate_etag(&metadata, modified_raw);
 
         // can we avoid sending a body?
         let mut is_304 = false;
@@ -271,7 +272,7 @@ fn assemble_file_path(root_path: &str, url: &str) -> PathBuf {
     PathBuf::from(complete_path)
 }
 
-fn generate_etag(metadata: &Metadata) -> String {
+fn generate_etag(metadata: &Metadata, modified: SystemTime) -> String {
     #[derive(Hash)]
     struct ShortMd {
         inode: u64,
@@ -282,7 +283,7 @@ fn generate_etag(metadata: &Metadata) -> String {
     let smd = ShortMd {
         inode: metadata.ino(),
         size: metadata.size(),
-        modified: metadata.modified().unwrap(),
+        modified,
     };
     let mut h = DefaultHasher::new();
     smd.hash(&mut h);
