@@ -2,7 +2,7 @@
 
 Serve files directly from Varnish, no external backend needed!
 
-As usual for vmods, the full API is in [vmod.vcc](vmod.vcc).
+The full API is documented in [API.md](API.md).
 
 ## Version matching
 
