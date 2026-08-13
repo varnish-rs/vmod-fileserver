@@ -14,7 +14,22 @@ use varnish::vcl::{Backend, Ctx, LogTag, StrOrBytes, VclBackend, VclResponse, Vc
 
 run_vtc_tests!("tests/*.vtc");
 
-#[varnish::vmod]
+/// Serve files directly from Varnish, no external backend needed.
+///
+/// ```vcl
+/// import fileserver;
+///
+/// backend default none;
+///
+/// sub vcl_init {
+///     new www = fileserver.root("/var/www/html");
+/// }
+///
+/// sub vcl_recv {
+///     set req.backend_hint = www.backend();
+/// }
+/// ```
+#[varnish::vmod(docs = "API.md")]
 mod fileserver {
     use std::error::Error;
 
@@ -29,10 +44,28 @@ mod fileserver {
     // - we create and return a Rust object, instead of a void pointer
     // - root() returns a Result, leaving the error handling to varnish-rs
     impl file_backend {
+        /// Create a new file-serving backend rooted at `path`.
+        ///
+        /// Beware: no check is done for symlinks, so the OS will still
+        /// follow one that points outside `path`, letting a request escape
+        /// it. This matters in a low-trust, multi-tenant setup, since a
+        /// tenant could use a symlink to read another tenant's files.
         pub fn root(
             ctx: &mut Ctx,
             #[vcl_name] name: &str,
+            /// Root directory files are served from; request URLs are
+            /// resolved relative to this path.
             path: &str,
+            /// Path to a `mime.types`-style file, used to populate the
+            /// `content-type` header from the request URL's extension.
+            ///
+            /// - If absent: `/etc/mime.types` is tried, and
+            ///   silently ignored if it's missing or invalid.
+            /// - Empty string (`""`): disables mime-type detection entirely.
+            /// - Any other path: must be a valid file, or VCL loading fails.
+            ///
+            /// If the file has multiple entries for the same extension, the
+            /// last one wins (matching nginx/Apache).
             mime_db: Option<&str>,
         ) -> Result<Self, Box<dyn Error>> {
             // sanity check (note that we don't have null pointers, so path is
@@ -65,6 +98,15 @@ mod fileserver {
             Ok(file_backend { backend })
         }
 
+        /// Return the Varnish backend serving files under this object's root.
+        ///
+        /// - Only `GET` and `HEAD` requests are served; anything else gets a 405.
+        /// - The request URL's query string, if any, is ignored when
+        ///   resolving the file on disk.
+        /// - A missing file returns 404; an unreadable one returns 403.
+        /// - `etag`/`if-none-match` and `last-modified`/`if-modified-since`
+        ///   are supported. `etag` is derived from the file's inode, size,
+        ///   and modification time (if available).
         pub unsafe fn backend(&self, _ctx: &Ctx) -> VCL_BACKEND {
             unsafe { self.backend.as_ref().vcl_ptr() }
         }
