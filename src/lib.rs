@@ -4,12 +4,12 @@ use std::error::Error;
 use std::fs::{File, Metadata};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Read, Take};
-use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
+use openat::Dir;
 use varnish::run_vtc_tests;
 use varnish::vcl::{Backend, Ctx, LogTag, StrOrBytes, VclBackend, VclResponse, VclResult};
 
@@ -34,6 +34,7 @@ run_vtc_tests!("tests/*.vtc");
 mod fileserver {
     use std::error::Error;
 
+    use openat::Dir;
     use varnish::ffi::VCL_BACKEND;
     use varnish::vcl::{Backend, Ctx};
 
@@ -47,8 +48,8 @@ mod fileserver {
     impl file_backend {
         /// Create a new file-serving backend rooted at `path`.
         ///
-        /// By default, symlinks inside `path` are checked so a request
-        /// can't use one to escape `path` — see `trust_links` below.
+        /// By default, no symlink anywhere in a request's path is ever
+        /// followed — see `follow_links` below.
         pub fn root(
             ctx: &mut Ctx,
             #[vcl_name] name: &str,
@@ -66,16 +67,17 @@ mod fileserver {
             /// If the file has multiple entries for the same extension, the
             /// last one wins (matching nginx/Apache).
             mime_db: Option<&str>,
-            /// If `false` (default), every request's resolved path is
-            /// checked (following symlinks) to make sure it's still inside
-            /// `path`; a request that escapes via a symlink gets a 403.
+            /// If `false` (default), every segment of a request's path is
+            /// resolved without ever following a symlink (whether it points
+            /// inside or outside `path`); a request that hits a symlink
+            /// anywhere along the way fails instead of being served.
             ///
-            /// If `true`, this check is skipped, matching this vmod's
-            /// original behavior: symlinks inside `path` are followed with
-            /// no containment check, which can let a request escape `path`
-            /// in a low-trust, multi-tenant setup.
+            /// If `true`, symlinks are followed unconditionally, matching
+            /// this vmod's original behavior: a symlink under `path` can
+            /// point anywhere on disk and will be served, which can let a
+            /// request escape `path` in a low-trust, multi-tenant setup.
             #[default(false)]
-            trust_links: bool,
+            follow_links: bool,
         ) -> Result<Self, Box<dyn Error>> {
             // sanity check (note that we don't have null pointers, so path is
             // at worst empty)
@@ -94,14 +96,15 @@ mod fileserver {
                 Some(p) => Some(build_mime_dict(p)?),
             };
 
-            // unless the VCL author trusts symlinks inside path, resolve it
-            // once now so every request can be checked against it
-            let canonical_root = if trust_links {
+            // unless the VCL author wants symlinks followed unconditionally,
+            // open the root once now so every request can be resolved
+            // relative to it, one non-symlink segment at a time
+            let root_dir = if follow_links {
                 None
             } else {
                 Some(
-                    std::fs::canonicalize(path)
-                        .map_err(|e| format!("fileserver: can't resolve root {path}: {e}"))?,
+                    Dir::open(path)
+                        .map_err(|e| format!("fileserver: can't open root {path}: {e}"))?,
                 )
             };
 
@@ -112,7 +115,7 @@ mod fileserver {
                 FileBackend {
                     mimes,
                     path: path.to_string(),
-                    canonical_root,
+                    root_dir,
                 },
                 false,
             )?;
@@ -125,8 +128,9 @@ mod fileserver {
         /// - The request URL's query string, if any, is ignored when
         ///   resolving the file on disk.
         /// - A missing file returns 404; an unreadable one returns 403.
-        /// - Unless `trust_links` was set on the constructor, a resolved
-        ///   path that escapes the root (e.g. via a symlink) returns 403.
+        /// - Unless `follow_links` was set on the constructor, a request
+        ///   that hits a symlink anywhere in its path fails instead of
+        ///   being served.
         /// - `etag`/`if-none-match` and `last-modified`/`if-modified-since`
         ///   are supported. `etag` is derived from the file's inode, size,
         ///   and modification time (if available).
@@ -147,7 +151,7 @@ struct file_backend {
 struct FileBackend {
     path: String,                           // top directory of our backend
     mimes: Option<HashMap<String, String>>, // a hashmap linking extensions to maps (optional)
-    canonical_root: Option<PathBuf>, // Some(root) unless trust_links=true; request paths must resolve inside it
+    root_dir: Option<Dir>, // Some(root) unless follow_links=true; requests are resolved through it, one non-symlink segment at a time
 }
 
 // silly helper until varnish-rs provides something more ergonomic
@@ -160,11 +164,10 @@ fn sob_helper(sob: StrOrBytes<'_>) -> &str {
 }
 
 impl VclBackend<FileTransfer> for FileBackend {
-    #[expect(clippy::too_many_lines)]
     fn get_response(&self, ctx: &mut Ctx) -> VclResult<Option<FileTransfer>> {
-        // we know that bereq and bereq_url, so we can just unwrap the options
-        let bereq = ctx.http_bereq.as_ref().unwrap();
-        let bereq_url = sob_helper(bereq.url().unwrap());
+        // we know that bereq and bereq_url are set, so we can just expect the options
+        let bereq = ctx.http_bereq.as_ref().expect("bereq is set during a backend fetch");
+        let bereq_url = sob_helper(bereq.url().expect("bereq always has a url"));
 
         // combine root and url into something that's hopefully safe. The query
         // string (if any) is not part of the filesystem path -- nginx and Apache
@@ -180,10 +183,14 @@ impl VclBackend<FileTransfer> for FileBackend {
 
         // reset the bereq lifetime, otherwise we couldn't use ctx in the line above
         // yes, it feels weird at first, but it's for our own good
-        let bereq = ctx.http_bereq.as_ref().unwrap();
+        let bereq = ctx.http_bereq.as_ref().expect("bereq is set during a backend fetch");
+        let bereq_url = sob_helper(bereq.url().expect("bereq always has a url"));
 
         // let's start building our response
-        let beresp = ctx.http_beresp.as_mut().unwrap();
+        let beresp = ctx
+            .http_beresp
+            .as_mut()
+            .expect("beresp is set during a backend fetch");
 
         // reject unsupported methods before touching the filesystem
         let method = bereq.method().map(sob_helper);
@@ -194,8 +201,17 @@ impl VclBackend<FileTransfer> for FileBackend {
         }
         let is_get = method == Some("GET");
 
-        // open the file and get some metadata
-        let f = match File::open(&path) {
+        // open the file and get some metadata. Unless the VCL author wants
+        // symlinks followed unconditionally (follow_links), walk the
+        // request one non-symlink segment at a time relative to the root
+        // dir we opened in root() -- a symlink anywhere along the way
+        // (inside or outside the root, we don't distinguish) makes the
+        // corresponding open_file/sub_dir call fail instead of following it
+        let f = match &self.root_dir {
+            Some(root_dir) => open_through_dir(root_dir, &clamp_segments(strip_query(bereq_url))),
+            None => File::open(&path),
+        };
+        let f = match f {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 beresp.set_status(404);
@@ -207,33 +223,6 @@ impl VclBackend<FileTransfer> for FileBackend {
             }
             Err(e) => return Err(e.to_string().into()),
         };
-
-        // unless the VCL author trusts symlinks inside the root (trust_links),
-        // verify containment against the file we actually opened, via its
-        // fd's real path in /proc -- checking a path string resolved
-        // *before* File::open would leave a TOCTOU window where a symlink
-        // could be swapped in between the check and the open() call
-        if let Some(root) = &self.canonical_root {
-            let real_path = match std::fs::read_link(format!("/proc/self/fd/{}", f.as_raw_fd())) {
-                Ok(p) => p,
-                Err(e) => return Err(e.to_string().into()),
-            };
-            if !real_path.starts_with(root) {
-                ctx.log(
-                    LogTag::Error,
-                    format!(
-                        "fileserver: {} resolves to {}, outside of the root, denying",
-                        path.display(),
-                        real_path.display()
-                    ),
-                );
-                // ctx.log() needed exclusive ctx access, so beresp (borrowed
-                // from a ctx field) has to be re-fetched afterwards
-                let beresp = ctx.http_beresp.as_mut().unwrap();
-                beresp.set_status(403);
-                return Ok(None);
-            }
-        }
 
         let metadata: Metadata = f.metadata().map_err(|e| e.to_string())?;
         let cl = metadata.len();
@@ -252,8 +241,11 @@ impl VclBackend<FileTransfer> for FileBackend {
         };
         // the ctx.log() call above needs exclusive access to ctx, so bereq/beresp
         // (borrowed from ctx fields) have to be re-fetched afterwards
-        let bereq = ctx.http_bereq.as_ref().unwrap();
-        let beresp = ctx.http_beresp.as_mut().unwrap();
+        let bereq = ctx.http_bereq.as_ref().expect("bereq is set during a backend fetch");
+        let beresp = ctx
+            .http_beresp
+            .as_mut()
+            .expect("beresp is set during a backend fetch");
         let modified: Option<DateTime<Utc>> = modified_raw.map(DateTime::from);
         let etag = generate_etag(&metadata, modified_raw);
 
@@ -353,16 +345,12 @@ fn strip_query(url: &str) -> &str {
     url.split_once('?').map_or(url, |(path, _)| path)
 }
 
-// given root_path and url, assemble the two so that the final path is still
-// inside root_path
-// This is purely lexical (no filesystem access, no link resolution): `..`
-// segments are clamped so they can never walk above root_path, but a
-// symlink placed under root_path can still point anywhere on disk. See
-// get_response()'s containment check (via `canonical_root`) for that.
-fn assemble_file_path(root_path: &str, url: &str) -> PathBuf {
-    assert_ne!(root_path, "");
-
-    let url_path = PathBuf::from(url);
+// split a request url into the list of path segments a file lookup should
+// use, clamping ".." so it can never walk above the root: this is purely
+// lexical (no filesystem access, no link resolution), so it says nothing
+// about symlinks -- that's handled separately, see open_through_dir()
+fn clamp_segments(url: &str) -> Vec<&str> {
+    let url_path = std::path::Path::new(url);
     let mut components = Vec::new();
 
     for c in url_path.components() {
@@ -380,13 +368,41 @@ fn assemble_file_path(root_path: &str, url: &str) -> PathBuf {
             }
         }
     }
+    components
+}
+
+// given root_path and url, assemble the two so that the final path is still
+// inside root_path. Used for logging and mime-type lookup, and (when
+// follow_links=true) for the actual File::open -- see clamp_segments()
+fn assemble_file_path(root_path: &str, url: &str) -> PathBuf {
+    assert_ne!(root_path, "");
 
     let mut complete_path = String::from(root_path);
-    for c in components {
+    for c in clamp_segments(url) {
         complete_path.push('/');
         complete_path.push_str(c);
     }
     PathBuf::from(complete_path)
+}
+
+// walk `segments` one at a time relative to `root`, opening each
+// intermediate segment as a directory and the last one as a file, using
+// openat(2)'s O_NOFOLLOW at every hop (via the `openat` crate) so a
+// symlink anywhere along the way -- whether it points inside or outside
+// root, we don't distinguish -- makes the lookup fail instead of being
+// followed
+fn open_through_dir(root: &Dir, segments: &[&str]) -> std::io::Result<File> {
+    match segments {
+        [] => root.open_file("."),
+        [file] => root.open_file(*file),
+        [dirs @ .., file] => {
+            let mut cur = root.sub_dir(dirs[0])?;
+            for d in &dirs[1..] {
+                cur = cur.sub_dir(*d)?;
+            }
+            cur.open_file(*file)
+        }
+    }
 }
 
 fn generate_etag(metadata: &Metadata, modified: Option<SystemTime>) -> String {

@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 chrono = "0.4.45"
+openat = "0.1.21"
 varnish = { version = "0.7.0", features = ["ffi"] }
 
 [lib]
