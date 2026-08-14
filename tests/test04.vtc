@@ -3,7 +3,7 @@ varnishtest "if-modified-since/if-none-match"
 feature cmd "command -v curl"
 
 shell {
-	echo -n "foo" > ${tmpdir}/foo
+	printf %s "foo" > ${tmpdir}/foo
 }
 
 varnish v1 -vcl {

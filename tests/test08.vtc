@@ -1,7 +1,7 @@
 varnishtest "duplicate extensions in mime.types use the last defined value"
 
 shell {
-	echo -n "foo" > ${tmpdir}/foo.pdf
+	printf %s "foo" > ${tmpdir}/foo.pdf
 
 	cat << EOF > ${tmpdir}/mimes
 application/pdf pdf

@@ -1,7 +1,7 @@
 varnishtest "missing or unreadable files return 404/403 instead of a generic backend error"
 
 shell {
-	echo -n "foo" > ${tmpdir}/foo
+	printf %s "foo" > ${tmpdir}/foo
 	chmod 000 ${tmpdir}/foo
 }
 
