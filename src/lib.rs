@@ -4,6 +4,7 @@ use std::error::Error;
 use std::fs::{File, Metadata};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Read, Take};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -193,45 +194,8 @@ impl VclBackend<FileTransfer> for FileBackend {
         }
         let is_get = method == Some("GET");
 
-        // unless the VCL author trusts symlinks inside the root (trust_links),
-        // resolve them and make sure the real path is still inside root --
-        // otherwise a symlink could let a request escape `path` (see root()'s doc)
-        let real_path = match &self.canonical_root {
-            None => path.clone(),
-            Some(root) => {
-                let resolved = match std::fs::canonicalize(&path) {
-                    Ok(p) => p,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        beresp.set_status(404);
-                        return Ok(None);
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                        beresp.set_status(403);
-                        return Ok(None);
-                    }
-                    Err(e) => return Err(e.to_string().into()),
-                };
-                if !resolved.starts_with(root) {
-                    ctx.log(
-                        LogTag::Error,
-                        format!(
-                            "fileserver: {} resolves to {}, outside of the root, denying",
-                            path.display(),
-                            resolved.display()
-                        ),
-                    );
-                    // ctx.log() needed exclusive ctx access, so beresp (borrowed
-                    // from a ctx field) has to be re-fetched afterwards
-                    let beresp = ctx.http_beresp.as_mut().unwrap();
-                    beresp.set_status(403);
-                    return Ok(None);
-                }
-                resolved
-            }
-        };
-
         // open the file and get some metadata
-        let f = match File::open(&real_path) {
+        let f = match File::open(&path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 beresp.set_status(404);
@@ -243,6 +207,34 @@ impl VclBackend<FileTransfer> for FileBackend {
             }
             Err(e) => return Err(e.to_string().into()),
         };
+
+        // unless the VCL author trusts symlinks inside the root (trust_links),
+        // verify containment against the file we actually opened, via its
+        // fd's real path in /proc -- checking a path string resolved
+        // *before* File::open would leave a TOCTOU window where a symlink
+        // could be swapped in between the check and the open() call
+        if let Some(root) = &self.canonical_root {
+            let real_path = match std::fs::read_link(format!("/proc/self/fd/{}", f.as_raw_fd())) {
+                Ok(p) => p,
+                Err(e) => return Err(e.to_string().into()),
+            };
+            if !real_path.starts_with(root) {
+                ctx.log(
+                    LogTag::Error,
+                    format!(
+                        "fileserver: {} resolves to {}, outside of the root, denying",
+                        path.display(),
+                        real_path.display()
+                    ),
+                );
+                // ctx.log() needed exclusive ctx access, so beresp (borrowed
+                // from a ctx field) has to be re-fetched afterwards
+                let beresp = ctx.http_beresp.as_mut().unwrap();
+                beresp.set_status(403);
+                return Ok(None);
+            }
+        }
+
         let metadata: Metadata = f.metadata().map_err(|e| e.to_string())?;
         let cl = metadata.len();
         let modified_raw = match metadata.modified() {
