@@ -164,6 +164,7 @@ fn sob_helper(sob: StrOrBytes<'_>) -> &str {
 }
 
 impl VclBackend<FileTransfer> for FileBackend {
+    #[expect(clippy::too_many_lines)]
     fn get_response(&self, ctx: &mut Ctx) -> VclResult<Option<FileTransfer>> {
         // we know that bereq and bereq_url are set, so we can just expect the options
         let bereq = ctx
