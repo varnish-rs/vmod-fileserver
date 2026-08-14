@@ -166,7 +166,10 @@ fn sob_helper(sob: StrOrBytes<'_>) -> &str {
 impl VclBackend<FileTransfer> for FileBackend {
     fn get_response(&self, ctx: &mut Ctx) -> VclResult<Option<FileTransfer>> {
         // we know that bereq and bereq_url are set, so we can just expect the options
-        let bereq = ctx.http_bereq.as_ref().expect("bereq is set during a backend fetch");
+        let bereq = ctx
+            .http_bereq
+            .as_ref()
+            .expect("bereq is set during a backend fetch");
         let bereq_url = sob_helper(bereq.url().expect("bereq always has a url"));
 
         // combine root and url into something that's hopefully safe. The query
@@ -183,7 +186,10 @@ impl VclBackend<FileTransfer> for FileBackend {
 
         // reset the bereq lifetime, otherwise we couldn't use ctx in the line above
         // yes, it feels weird at first, but it's for our own good
-        let bereq = ctx.http_bereq.as_ref().expect("bereq is set during a backend fetch");
+        let bereq = ctx
+            .http_bereq
+            .as_ref()
+            .expect("bereq is set during a backend fetch");
         let bereq_url = sob_helper(bereq.url().expect("bereq always has a url"));
 
         // let's start building our response
@@ -241,7 +247,10 @@ impl VclBackend<FileTransfer> for FileBackend {
         };
         // the ctx.log() call above needs exclusive access to ctx, so bereq/beresp
         // (borrowed from ctx fields) have to be re-fetched afterwards
-        let bereq = ctx.http_bereq.as_ref().expect("bereq is set during a backend fetch");
+        let bereq = ctx
+            .http_bereq
+            .as_ref()
+            .expect("bereq is set during a backend fetch");
         let beresp = ctx
             .http_beresp
             .as_mut()
