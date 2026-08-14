@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+
+- `root()` gained a `trust_links` option (`BOOL`, default `false`). By
+  default, every request's resolved path is checked to make sure it didn't
+  escape `path` via a symlink; set `trust_links = true` to skip that check
+  and restore the previous behavior.
+- `API.md`, generated from source doc comments at build time, documents the
+  full VCL API (`root()`, `backend()`).
+
+### Changed
+
+- By default, a symlink inside `path` that points outside of it is no
+  longer followed; the request gets a 403 instead of serving the escaped file.
+- `root()` now resolves `path` at VCL-load time (unless `trust_links =
+  true`) and fails loading if it doesn't exist, instead of only failing
+  per-request.
+
 ## [0.1.0] - 2026-08-10
 
 ### Changed
