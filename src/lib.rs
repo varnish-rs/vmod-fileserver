@@ -72,10 +72,10 @@ mod fileserver {
             /// inside or outside `path`); a request that hits a symlink
             /// anywhere along the way fails instead of being served.
             ///
-            /// If `true`, symlinks are followed unconditionally, matching
-            /// this vmod's original behavior: a symlink under `path` can
-            /// point anywhere on disk and will be served, which can let a
-            /// request escape `path` in a low-trust, multi-tenant setup.
+            /// If `true`, symlinks are followed unconditionally: a symlink
+            /// under `path` can point anywhere on disk and will be served,
+            /// which can let a request escape `path` in a low-trust,
+            /// multi-tenant setup.
             #[default(false)]
             follow_links: bool,
         ) -> Result<Self, Box<dyn Error>> {

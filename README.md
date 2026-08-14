@@ -41,7 +41,6 @@ sub vcl_recv {
 You'll need:
 - `cargo` (and the accompanying `rust` package)
 - `clang`
-- `python3`
 - the `varnish` 7.3 development libraries/headers ([depends on the `varnish` crate you are using](https://github.com/gquintard/varnish-rs#versions))
 
 ## Build and test
