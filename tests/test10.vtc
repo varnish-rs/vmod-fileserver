@@ -1,0 +1,53 @@
+varnishtest "symlinks can't escape the root by default, but trust_links opts back into the old behavior"
+
+shell {
+	mkdir -p ${tmpdir}/root
+	echo -n "hello" > ${tmpdir}/root/normal.txt
+	echo -n "topsecret" > ${tmpdir}/secret
+	ln -s ${tmpdir}/secret ${tmpdir}/root/escape
+}
+
+varnish v1 -vcl {
+	import fileserver from "${vmod}";
+
+	backend default none;
+
+	sub vcl_init {
+		new safe = fileserver.root("${tmpdir}/root");
+		new trusting = fileserver.root("${tmpdir}/root", trust_links = true);
+	}
+
+	sub vcl_recv {
+		if (req.http.which == "trusting") {
+			set req.backend_hint = trusting.backend();
+		} else {
+			set req.backend_hint = safe.backend();
+		}
+		return (pass);
+	}
+} -start
+
+client c1 {
+	# normal file, no symlink involved: still served
+	txreq -url "/normal.txt"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == "hello"
+
+	# default (trust_links=false): symlink escaping the root is denied
+	txreq -url "/escape"
+	rxresp
+	expect resp.status == 403
+
+	# adversarial ".." example from the original report: already clamped
+	# by assemble_file_path, so this just 404s (no such path under root)
+	txreq -url "/../../../../../../../../etc/passwd"
+	rxresp
+	expect resp.status == 404
+
+	# trust_links=true: opts back into the old behavior, symlink is followed
+	txreq -url "/escape" -hdr "which: trusting"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == "topsecret"
+} -run

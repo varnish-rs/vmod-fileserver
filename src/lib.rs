@@ -46,10 +46,8 @@ mod fileserver {
     impl file_backend {
         /// Create a new file-serving backend rooted at `path`.
         ///
-        /// Beware: no check is done for symlinks, so the OS will still
-        /// follow one that points outside `path`, letting a request escape
-        /// it. This matters in a low-trust, multi-tenant setup, since a
-        /// tenant could use a symlink to read another tenant's files.
+        /// By default, symlinks inside `path` are checked so a request
+        /// can't use one to escape `path` — see `trust_links` below.
         pub fn root(
             ctx: &mut Ctx,
             #[vcl_name] name: &str,
@@ -67,6 +65,16 @@ mod fileserver {
             /// If the file has multiple entries for the same extension, the
             /// last one wins (matching nginx/Apache).
             mime_db: Option<&str>,
+            /// If `false` (default), every request's resolved path is
+            /// checked (following symlinks) to make sure it's still inside
+            /// `path`; a request that escapes via a symlink gets a 403.
+            ///
+            /// If `true`, this check is skipped, matching this vmod's
+            /// original behavior: symlinks inside `path` are followed with
+            /// no containment check, which can let a request escape `path`
+            /// in a low-trust, multi-tenant setup.
+            #[default(false)]
+            trust_links: bool,
         ) -> Result<Self, Box<dyn Error>> {
             // sanity check (note that we don't have null pointers, so path is
             // at worst empty)
@@ -85,6 +93,17 @@ mod fileserver {
                 Some(p) => Some(build_mime_dict(p)?),
             };
 
+            // unless the VCL author trusts symlinks inside path, resolve it
+            // once now so every request can be checked against it
+            let canonical_root = if trust_links {
+                None
+            } else {
+                Some(
+                    std::fs::canonicalize(path)
+                        .map_err(|e| format!("fileserver: can't resolve root {path}: {e}"))?,
+                )
+            };
+
             let backend = Backend::new(
                 ctx,
                 "fileserver",
@@ -92,6 +111,7 @@ mod fileserver {
                 FileBackend {
                     mimes,
                     path: path.to_string(),
+                    canonical_root,
                 },
                 false,
             )?;
@@ -104,6 +124,8 @@ mod fileserver {
         /// - The request URL's query string, if any, is ignored when
         ///   resolving the file on disk.
         /// - A missing file returns 404; an unreadable one returns 403.
+        /// - Unless `trust_links` was set on the constructor, a resolved
+        ///   path that escapes the root (e.g. via a symlink) returns 403.
         /// - `etag`/`if-none-match` and `last-modified`/`if-modified-since`
         ///   are supported. `etag` is derived from the file's inode, size,
         ///   and modification time (if available).
@@ -124,6 +146,7 @@ struct file_backend {
 struct FileBackend {
     path: String,                           // top directory of our backend
     mimes: Option<HashMap<String, String>>, // a hashmap linking extensions to maps (optional)
+    canonical_root: Option<PathBuf>, // Some(root) unless trust_links=true; request paths must resolve inside it
 }
 
 // silly helper until varnish-rs provides something more ergonomic
@@ -136,6 +159,7 @@ fn sob_helper(sob: StrOrBytes<'_>) -> &str {
 }
 
 impl VclBackend<FileTransfer> for FileBackend {
+    #[expect(clippy::too_many_lines)]
     fn get_response(&self, ctx: &mut Ctx) -> VclResult<Option<FileTransfer>> {
         // we know that bereq and bereq_url, so we can just unwrap the options
         let bereq = ctx.http_bereq.as_ref().unwrap();
@@ -169,8 +193,45 @@ impl VclBackend<FileTransfer> for FileBackend {
         }
         let is_get = method == Some("GET");
 
+        // unless the VCL author trusts symlinks inside the root (trust_links),
+        // resolve them and make sure the real path is still inside root --
+        // otherwise a symlink could let a request escape `path` (see root()'s doc)
+        let real_path = match &self.canonical_root {
+            None => path.clone(),
+            Some(root) => {
+                let resolved = match std::fs::canonicalize(&path) {
+                    Ok(p) => p,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        beresp.set_status(404);
+                        return Ok(None);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                        beresp.set_status(403);
+                        return Ok(None);
+                    }
+                    Err(e) => return Err(e.to_string().into()),
+                };
+                if !resolved.starts_with(root) {
+                    ctx.log(
+                        LogTag::Error,
+                        format!(
+                            "fileserver: {} resolves to {}, outside of the root, denying",
+                            path.display(),
+                            resolved.display()
+                        ),
+                    );
+                    // ctx.log() needed exclusive ctx access, so beresp (borrowed
+                    // from a ctx field) has to be re-fetched afterwards
+                    let beresp = ctx.http_beresp.as_mut().unwrap();
+                    beresp.set_status(403);
+                    return Ok(None);
+                }
+                resolved
+            }
+        };
+
         // open the file and get some metadata
-        let f = match File::open(&path) {
+        let f = match File::open(&real_path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 beresp.set_status(404);
@@ -302,8 +363,10 @@ fn strip_query(url: &str) -> &str {
 
 // given root_path and url, assemble the two so that the final path is still
 // inside root_path
-// There's no access to the file system, and therefore no link resolution
-// it can be an issue for multitenancy, beware!
+// This is purely lexical (no filesystem access, no link resolution): `..`
+// segments are clamped so they can never walk above root_path, but a
+// symlink placed under root_path can still point anywhere on disk. See
+// get_response()'s containment check (via `canonical_root`) for that.
 fn assemble_file_path(root_path: &str, url: &str) -> PathBuf {
     assert_ne!(root_path, "");
 
