@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+
+- `root()` gained a `follow_links` option (`BOOL`, default `false`). By
+  default, a request is resolved one path segment at a time and never
+  follows a symlink (whether it points inside or outside `path`); set
+  `follow_links = true` to follow symlinks unconditionally and restore the
+  previous behavior.
+- `API.md`, generated from source doc comments at build time, documents the
+  full VCL API (`root()`, `backend()`).
+
+### Changed
+
+- By default, a request that hits a symlink anywhere in its path now fails
+  instead of the symlink being followed.
+- `root()` now opens `path` at VCL-load time (unless `follow_links = true`)
+  and fails loading if it doesn't exist, instead of only failing per-request.
+
 ## [0.1.0] - 2026-08-10
 
 ### Changed

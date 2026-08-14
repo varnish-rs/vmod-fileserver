@@ -35,14 +35,12 @@ import fileserver from "path/to/libfileserver.so";
 
 ## Object `file_backend`
 
-### Constructor `fileserver.root(STRING path, [STRING mime_db])`
+### Constructor `fileserver.root(STRING path, [STRING mime_db], BOOL follow_links = 0)`
 
 Create a new file-serving backend rooted at `path`.
 
-Beware: no check is done for symlinks, so the OS will still
-follow one that points outside `path`, letting a request escape
-it. This matters in a low-trust, multi-tenant setup, since a
-tenant could use a symlink to read another tenant's files.
+By default, no symlink anywhere in a request's path is ever
+followed — see `follow_links` below.
 
 * `STRING path`:
 Root directory files are served from; request URLs are
@@ -58,6 +56,16 @@ silently ignored if it's missing or invalid.
 
 If the file has multiple entries for the same extension, the
 last one wins (matching nginx/Apache).
+* `BOOL follow_links`:
+If `false` (default), every segment of a request's path is
+resolved without ever following a symlink (whether it points
+inside or outside `path`); a request that hits a symlink
+anywhere along the way fails instead of being served.
+
+If `true`, symlinks are followed unconditionally: a symlink
+under `path` can point anywhere on disk and will be served,
+which can let a request escape `path` in a low-trust,
+multi-tenant setup.
 
 ### Method `BACKEND <object>.backend()`
 
@@ -67,6 +75,9 @@ Return the Varnish backend serving files under this object's root.
 - The request URL's query string, if any, is ignored when
 resolving the file on disk.
 - A missing file returns 404; an unreadable one returns 403.
+- Unless `follow_links` was set on the constructor, a request
+that hits a symlink anywhere in its path fails instead of
+being served.
 - `etag`/`if-none-match` and `last-modified`/`if-modified-since`
 are supported. `etag` is derived from the file's inode, size,
 and modification time (if available).

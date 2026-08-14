@@ -1,0 +1,72 @@
+varnishtest "no symlink is ever followed by default, but follow_links opts back into the old behavior"
+
+shell {
+	mkdir -p ${tmpdir}/root
+	echo -n "hello" > ${tmpdir}/root/normal.txt
+	echo -n "topsecret" > ${tmpdir}/secret
+	ln -s ${tmpdir}/secret ${tmpdir}/root/escape
+	ln -s ${tmpdir}/root/normal.txt ${tmpdir}/root/inside-link
+}
+
+varnish v1 -vcl {
+	import fileserver from "${vmod}";
+
+	backend default none;
+
+	sub vcl_init {
+		new safe = fileserver.root("${tmpdir}/root");
+		new following = fileserver.root("${tmpdir}/root", follow_links = true);
+	}
+
+	sub vcl_recv {
+		if (req.http.which == "following") {
+			set req.backend_hint = following.backend();
+		} else {
+			set req.backend_hint = safe.backend();
+		}
+		return (pass);
+	}
+} -start
+
+client c1 {
+	# normal file, no symlink involved: still served
+	txreq -url "/normal.txt"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == "hello"
+
+	# HEAD is resolved the same way as GET
+	txreq -method "HEAD" -url "/normal.txt"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == ""
+
+	# default (follow_links=false): no symlink is followed, even one that
+	# stays inside the root -- we don't distinguish, any symlink just fails
+	txreq -url "/inside-link"
+	rxresp
+	expect resp.status == 503
+
+	# default (follow_links=false): a symlink escaping the root fails too
+	txreq -url "/escape"
+	rxresp
+	expect resp.status == 503
+
+	# adversarial ".." example from the original report: already clamped
+	# lexically before it ever reaches the filesystem, so this just 404s
+	txreq -url "/../../../../../../../../etc/passwd"
+	rxresp
+	expect resp.status == 404
+
+	# follow_links=true: opts back into the old behavior, symlinks followed
+	# unconditionally, wherever they point
+	txreq -url "/escape" -hdr "which: following"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == "topsecret"
+
+	txreq -url "/inside-link" -hdr "which: following"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == "hello"
+} -run
