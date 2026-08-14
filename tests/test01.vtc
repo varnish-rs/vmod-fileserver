@@ -1,9 +1,9 @@
 varnishtest "basic file access"
 
 shell {
-	echo -n "foo" > ${tmpdir}/foo
+	printf %s "foo" > ${tmpdir}/foo
 	mkdir -p ${tmpdir}/bar/baz
-	echo -n "qux" > ${tmpdir}/bar/baz/qux
+	printf %s "qux" > ${tmpdir}/bar/baz/qux
 }
 
 varnish v1 -vcl {

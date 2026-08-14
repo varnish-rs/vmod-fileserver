@@ -1,7 +1,7 @@
 varnishtest "methods"
 
 shell {
-	echo -n "foo" > ${tmpdir}/foo.pdf
+	printf %s "foo" > ${tmpdir}/foo.pdf
 
 	echo "application/pdf pdf" > ${tmpdir}/mimes
 }

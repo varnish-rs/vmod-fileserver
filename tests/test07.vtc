@@ -1,7 +1,7 @@
 varnishtest "query string is ignored when resolving a file on disk"
 
 shell {
-	echo -n "foo" > ${tmpdir}/foo
+	printf %s "foo" > ${tmpdir}/foo
 }
 
 varnish v1 -vcl {

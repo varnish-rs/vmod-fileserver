@@ -2,8 +2,8 @@ varnishtest "no symlink is ever followed by default, but follow_links opts back 
 
 shell {
 	mkdir -p ${tmpdir}/root
-	echo -n "hello" > ${tmpdir}/root/normal.txt
-	echo -n "topsecret" > ${tmpdir}/secret
+	printf %s "hello" > ${tmpdir}/root/normal.txt
+	printf %s "topsecret" > ${tmpdir}/secret
 	ln -s ${tmpdir}/secret ${tmpdir}/root/escape
 	ln -s ${tmpdir}/root/normal.txt ${tmpdir}/root/inside-link
 }

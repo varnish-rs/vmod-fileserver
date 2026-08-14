@@ -1,7 +1,7 @@
 varnishtest "make sure that not dealing with the request body is ok"
 
 shell {
-	echo -n "foo" > ${tmpdir}/foo
+	printf %s "foo" > ${tmpdir}/foo
 }
 
 varnish v1 -vcl {

@@ -1,9 +1,9 @@
 varnishtest "mime types"
 
 shell {
-	echo -n "foo" > ${tmpdir}/foo.jpeg
-	echo -n "foo" > ${tmpdir}/foo.json
-	echo -n "foo" > ${tmpdir}/foo.pdf
+	printf %s "foo" > ${tmpdir}/foo.jpeg
+	printf %s "foo" > ${tmpdir}/foo.json
+	printf %s "foo" > ${tmpdir}/foo.pdf
 	touch ${tmpdir}/empty.pdf
 
 	cat << EOF > ${tmpdir}/mimes
