@@ -68,6 +68,8 @@ jobs:
         run: just build
       - name: Run tests
         run: just test
+      - name: Check without default features
+        run: just check-no-default-features
 
   # This job checks if any of the previous jobs failed or were canceled.
   # This approach also allows some jobs to be skipped if they are not needed.

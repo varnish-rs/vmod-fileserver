@@ -51,4 +51,11 @@ process p1 {
 	tc 304 -H "if-none-match: $ETAG" -H "if-modified-since: Tue, 01 Jan 2030 00:00:00 GMT"
 	tc 304 -H "if-none-match: $ETAG" -H "if-modified-since: Tue, 01 Jan 2030 00:00:00 GMT"
 	tc 304 -H "if-modified-since: Tue, 01 Jan 2030 00:00:00 GMT"
+
+	# round-tripping the server's own last-modified value must always 304,
+	# regardless of the file's actual mtime sub-second component (a file
+	# whose mtime isn't exactly on a whole second previously never matched,
+	# since last-modified is sent at whole-second precision but was compared
+	# against the untruncated mtime)
+	tc 304 -H "if-modified-since: $LM"
 } -run

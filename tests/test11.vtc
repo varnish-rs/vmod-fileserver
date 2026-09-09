@@ -1,0 +1,148 @@
+varnishtest "index_file serves the first matching candidate in a directory"
+
+shell {
+	mkdir -p ${tmpdir}/withhtml
+	printf %s "html-index" > ${tmpdir}/withhtml/index.html
+
+	mkdir -p ${tmpdir}/withhtm
+	printf %s "htm-index" > ${tmpdir}/withhtm/index.htm
+
+	mkdir -p ${tmpdir}/empty
+
+	# a directory that could be mistaken for a host name, to check the
+	# trailing-slash redirect can't be turned into an open redirect
+	mkdir -p "${tmpdir}/evil.example.com"
+	printf %s "not actually evil" > "${tmpdir}/evil.example.com/index.html"
+
+	printf %s "space" > "${tmpdir}/has space.txt"
+
+	# a FIFO must never be opened directly: with no writer on the other
+	# end, open() blocks the calling thread forever
+	mkfifo ${tmpdir}/afifo
+	mkdir -p ${tmpdir}/fifoindex
+	mkfifo ${tmpdir}/fifoindex/index.html
+
+	# an index_file candidate that's itself a directory must be skipped,
+	# falling through to the next candidate
+	mkdir -p ${tmpdir}/dirindex/index.html
+	printf %s "htm-index-wins" > ${tmpdir}/dirindex/index.htm
+
+	# index_file() under follow_links=true, exercising the std::fs
+	# (non-openat) candidate-lookup path
+	mkdir -p ${tmpdir}/withindex_following
+	printf %s "following-index" > ${tmpdir}/withindex_following/index.html
+}
+
+varnish v1 -vcl {
+	import fileserver from "${vmod}";
+
+	backend default none;
+
+	sub vcl_init {
+		new www = fileserver.root("${tmpdir}");
+		www.index_file("index.html");
+		www.index_file("index.htm");
+
+		new following = fileserver.root("${tmpdir}", follow_links = true);
+		following.index_file("index.html");
+	}
+
+	sub vcl_recv {
+		if (req.http.which == "following") {
+			set req.backend_hint = following.backend();
+		} else {
+			set req.backend_hint = www.backend();
+		}
+		return (pass);
+	}
+} -start
+
+client c1 {
+	# first candidate present: served
+	txreq -url "/withhtml/"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == "html-index"
+
+	# first candidate absent, falls back to the second
+	txreq -url "/withhtm/"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == "htm-index"
+
+	# directory request missing a trailing slash: redirected so relative
+	# links in the served/generated content stay correct
+	txreq -url "/withhtml"
+	rxresp
+	expect resp.status == 301
+	expect resp.http.location == "/withhtml/"
+
+	# trailing slash redirect preserves the query string
+	txreq -url "/withhtml?v=1"
+	rxresp
+	expect resp.status == 301
+	expect resp.http.location == "/withhtml/?v=1"
+
+	# no candidate present, autoindex off (default): 403, matches nginx
+	txreq -url "/empty/"
+	rxresp
+	expect resp.status == 403
+
+	# a directory named like a host, requested with a leading "//", must not
+	# turn into a scheme-relative Location a browser resolves as an
+	# off-site redirect
+	txreq -url "//evil.example.com"
+	rxresp
+	expect resp.status == 301
+	expect resp.http.location == "/evil.example.com/"
+
+	# a percent-encoded path resolves to the same file a literal one would
+	txreq -url "/has%20space.txt"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == "space"
+
+	# malformed percent-encoding is rejected rather than passed through
+	txreq -url "/has%2space.txt"
+	rxresp
+	expect resp.status == 400
+
+	# a trailing slash only makes sense for a directory
+	txreq -url "/withhtml/index.html/"
+	rxresp
+	expect resp.status == 404
+
+	# a FIFO requested directly is never opened -- no writer means it
+	# would otherwise block the request forever
+	txreq -url "/afifo"
+	rxresp
+	expect resp.status == 403
+
+	# same for a FIFO named like an index_file candidate: it's not opened,
+	# and since it's the only candidate present, the request falls through
+	# to a 403 rather than hanging
+	txreq -url "/fifoindex/"
+	rxresp
+	expect resp.status == 403
+
+	# a regular file used as an intermediate path segment can't possibly
+	# be a directory -- treat it as "not found" (ENOTDIR), not a hard
+	# backend error
+	txreq -url "/withhtml/index.html/oops"
+	rxresp
+	expect resp.status == 404
+
+	# an index_file candidate that's itself a directory is skipped,
+	# falling through to the next candidate
+	txreq -url "/dirindex/"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == "htm-index-wins"
+
+	# index_file() also works under follow_links=true, which resolves
+	# candidates via plain std::fs (open_regular_at) rather than openat
+	txreq -url "/withindex_following/" -hdr "which: following"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == "following-index"
+} -run

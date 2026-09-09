@@ -1,0 +1,62 @@
+varnishtest "autoindex truncates a directory with more than MAX_LISTING_ENTRIES entries"
+
+shell {
+	mkdir -p ${tmpdir}/huge
+	(cd ${tmpdir}/huge && seq -f 'f%06g' 1 10001 | xargs touch)
+
+	# exactly MAX_LISTING_ENTRIES real entries, nothing to filter out: the
+	# raw-entry counter (which exists so filtered-out names like dotfiles
+	# can't be used to force an uncapped scan) must not false-positive here
+	mkdir -p ${tmpdir}/exact
+	(cd ${tmpdir}/exact && seq -f 'f%06g' 1 10000 | xargs touch)
+}
+
+varnish v1 -vcl {
+	import fileserver from "${vmod}";
+
+	backend default none;
+
+	sub vcl_init {
+		new www = fileserver.root("${tmpdir}");
+		www.autoindex(true);
+
+		new exact = fileserver.root("${tmpdir}/exact");
+		exact.autoindex(true);
+	}
+
+	sub vcl_recv {
+		if (req.http.which == "exact") {
+			set req.backend_hint = exact.backend();
+		} else {
+			set req.backend_hint = www.backend();
+		}
+		return (pass);
+	}
+} -start
+
+client c1 {
+	# more entries than MAX_LISTING_ENTRIES: the response still succeeds,
+	# but says so via a header, since none of the three formats otherwise
+	# indicate the list is incomplete
+	txreq -url "/huge/" -hdr "accept: application/json"
+	rxresp
+	expect resp.status == 200
+	expect resp.http.x-fileserver-truncated == "true"
+
+	# same for HTML and YAML
+	txreq -url "/huge/"
+	rxresp
+	expect resp.status == 200
+	expect resp.http.x-fileserver-truncated == "true"
+
+	txreq -url "/huge/" -hdr "accept: application/x-yaml"
+	rxresp
+	expect resp.status == 200
+	expect resp.http.x-fileserver-truncated == "true"
+
+	# exactly MAX_LISTING_ENTRIES real entries: no false-positive truncation
+	txreq -url "/" -hdr "which: exact"
+	rxresp
+	expect resp.status == 200
+	expect resp.http.x-fileserver-truncated == <undef>
+} -run

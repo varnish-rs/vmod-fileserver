@@ -1,0 +1,56 @@
+varnishtest "autoindex_human_size/autoindex_human_dates toggle the HTML rendering"
+
+shell {
+	mkdir -p ${tmpdir}/dir
+	dd if=/dev/zero of=${tmpdir}/dir/big.bin bs=1024 count=2 >/dev/null 2>&1
+}
+
+varnish v1 -vcl {
+	import fileserver from "${vmod}";
+
+	backend default none;
+
+	sub vcl_init {
+		new human = fileserver.root("${tmpdir}");
+		human.autoindex(true);
+		# human_size/human_dates default to true
+
+		new raw = fileserver.root("${tmpdir}");
+		raw.autoindex(true);
+		raw.autoindex_human_size(false);
+		raw.autoindex_human_dates(false);
+	}
+
+	sub vcl_recv {
+		if (req.http.which == "raw") {
+			set req.backend_hint = raw.backend();
+		} else {
+			set req.backend_hint = human.backend();
+		}
+		return (pass);
+	}
+} -start
+
+client c1 {
+	txreq -url "/dir/"
+	rxresp
+	expect resp.status == 200
+	# human-friendly size, with the exact byte count in a tooltip
+	expect resp.body ~ {2\.0K}
+	expect resp.body ~ {title="2048 bytes"}
+	# nginx-style date (day-month-year hour:min), with a tooltip carrying
+	# the precise timestamp
+	expect resp.body ~ {[0-9]{2}-[A-Za-z]{3}-[0-9]{4} [0-9]{2}:[0-9]{2}}
+	expect resp.body ~ {<span title="[0-9]{4}-[0-9]{2}-[0-9]{2}T}
+
+	txreq -url "/dir/" -hdr "which: raw"
+	rxresp
+	expect resp.status == 200
+	# exact byte count shown directly, no tooltip
+	expect resp.body ~ {2048}
+	expect resp.body !~ {2\.0K}
+	expect resp.body !~ {title="2048 bytes"}
+	# same nginx-style date format as the human case, but no tooltip this time
+	expect resp.body ~ {[0-9]{2}-[A-Za-z]{3}-[0-9]{4} [0-9]{2}:[0-9]{2}}
+	expect resp.body !~ {<span title="[0-9]{4}-[0-9]{2}-[0-9]{2}T}
+} -run

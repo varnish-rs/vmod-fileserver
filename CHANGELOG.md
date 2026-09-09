@@ -15,6 +15,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   previous behavior.
 - `API.md`, generated from source doc comments at build time, documents the
   full VCL API (`root()`, `backend()`).
+- `index_file(STRING)`: adds a candidate filename (bare filenames only, no
+  `/`) tried, in the order added, when a request resolves to a directory.
+- `autoindex(BOOL)`, `autoindex_human_size(BOOL)`, and
+  `autoindex_human_dates(BOOL)`: when no `index_file` matches, generate an
+  nginx-style directory listing (HTML, JSON, or YAML, picked from the
+  request's `accept` header) instead of a 403. Gated behind a new
+  `autoindex` Cargo feature (on by default), which pulls in `serde`,
+  `serde_json`, and `yaml_serde`.
+- Request paths are now percent-decoded (and re-validated) before being
+  resolved on disk, so a generated listing's links resolve correctly.
 
 ### Changed
 
@@ -22,6 +32,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   instead of the symlink being followed.
 - `root()` now opens `path` at VCL-load time (unless `follow_links = true`)
   and fails loading if it doesn't exist, instead of only failing per-request.
+- A request that resolves to a directory now gets a `301` redirect (adding
+  a trailing slash), the first matching `index_file`, a generated listing,
+  or a `403`, instead of an opaque backend error.
+- A request with a trailing slash on a regular file now gets a `404`
+  instead of serving the file, mirroring the new directory-vs-file
+  distinction above.
 
 ## [0.1.0] - 2026-08-10
 

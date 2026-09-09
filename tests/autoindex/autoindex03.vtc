@@ -1,0 +1,125 @@
+varnishtest "autoindex: symlinks, dotfiles, FIFOs/unreadable files, hrefs, and Vary"
+
+shell {
+	mkdir -p ${tmpdir}/dir/adir
+	printf %s "hello" > ${tmpdir}/dir/afile.txt
+	printf %s "hidden" > ${tmpdir}/dir/.hidden
+	printf %s "no read for you" > ${tmpdir}/dir/noperm.txt
+	chmod 000 ${tmpdir}/dir/noperm.txt
+	mkfifo ${tmpdir}/dir/afifo
+	ln -s afile.txt ${tmpdir}/dir/alink
+	printf %s "space" > "${tmpdir}/dir/has space.txt"
+
+	# a non-UTF-8 name can't round-trip through percent-decoding, so it
+	# would only ever produce a dead link -- must be skipped, not crash
+	# rendering or otherwise break the rest of the listing. Best-effort:
+	# some filesystems (e.g. macOS's APFS) reject non-UTF-8 names outright,
+	# so there's nothing to exercise there -- no assertion below depends on
+	# this file existing, only on the rest of the listing still working
+	# fine alongside it when the filesystem allows it
+	badname=$(printf '\377\376bad.txt')
+	printf %s "unnameable" > "${tmpdir}/dir/$badname" 2>/dev/null || true
+
+	# HTML-significant characters in a filename must be escaped differently
+	# in the href (percent-encoded) vs. the link text (HTML-entity-escaped)
+	printf %s "html" > "${tmpdir}/dir/a<b>c&d.txt"
+
+	# a name at least NAME_COL (50) characters long exercises the HTML
+	# column-truncation arithmetic
+	printf %s "long" > ${tmpdir}/dir/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.txt
+
+	# a filename can legally contain an ESC byte (or other control chars);
+	# it must never reach the listing's HTML text raw, or anyone viewing
+	# the response through a terminal gets arbitrary escape sequences
+	# executed (screen clears, hidden/spoofed text, etc.)
+	escname=$(printf 'evil\033[31mred\033[0m.txt')
+	printf %s "ansi" > "${tmpdir}/dir/$escname"
+
+	# U+202E (RIGHT-TO-LEFT OVERRIDE) is a legal filename byte sequence
+	# that isn't a `char::is_control()` control character, but can still
+	# make a browser *display* the name misleadingly (e.g. disguising a
+	# ".exe" as a ".jpg") -- the classic filename-spoofing trick
+	rloname=$(printf 'evil\342\200\256gpj.exe')
+	printf %s "rlo" > "${tmpdir}/dir/$rloname"
+}
+
+varnish v1 -vcl {
+	import fileserver from "${vmod}";
+
+	backend default none;
+
+	sub vcl_init {
+		new safe = fileserver.root("${tmpdir}");
+		safe.autoindex(true);
+
+		new following = fileserver.root("${tmpdir}", follow_links = true);
+		following.autoindex(true);
+	}
+
+	sub vcl_recv {
+		if (req.http.which == "following") {
+			set req.backend_hint = following.backend();
+		} else {
+			set req.backend_hint = safe.backend();
+		}
+		return (pass);
+	}
+} -start
+
+client c1 {
+	# default (follow_links=false): a FIFO with no writer, and a file with no
+	# read permission, must not hang the request or vanish from the listing
+	# (both are only stat'd, never opened) -- but a symlink is skipped, since
+	# reporting its target's metadata would mean silently following it
+	txreq -url "/dir/"
+	rxresp
+	expect resp.status == 200
+	expect resp.body ~ "afile.txt"
+	expect resp.body ~ "adir/"
+	expect resp.body ~ "afifo"
+	expect resp.body ~ "noperm.txt"
+	expect resp.body !~ "alink"
+	# nginx-style: dotfiles aren't advertised
+	expect resp.body !~ {\.hidden}
+	# the response depends on accept, so downstream caches must not conflate
+	# different formats under one cache entry
+	expect resp.http.vary == "accept"
+
+	# a link this listing generates must actually resolve to the file it
+	# names, not 404 -- percent-encoding a name must round-trip
+	expect resp.body ~ {href="has%20space.txt"}
+	txreq -url "/dir/has%20space.txt"
+	rxresp
+	expect resp.status == 200
+	expect resp.body == "space"
+
+	# HTML-significant characters: percent-encoded in the href (attribute
+	# context), HTML-entity-escaped in the link text (text context)
+	txreq -url "/dir/"
+	rxresp
+	expect resp.body ~ {href="a%3Cb%3Ec%26d.txt"}
+	expect resp.body ~ {>a&lt;b&gt;c&amp;d.txt<}
+	# a name >= NAME_COL chars gets truncated (with the href still carrying
+	# the full name) so it can't break the listing's column alignment
+	expect resp.body ~ {href="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\.txt"}
+	expect resp.body ~ {>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\.\.&gt;<}
+	# a control character (e.g. an ANSI escape sequence) in a filename is
+	# percent-encoded in the href (so the link still resolves) but replaced
+	# in the link text -- it must never reach the raw HTML text, or anyone
+	# viewing the response through a terminal gets it executed
+	expect resp.body ~ {href="evil%1B%5B31mred%1B%5B0m\.txt"}
+	expect resp.body ~ {>evil�\[31mred�\[0m\.txt<}
+	# same idea for a Unicode bidi-override character: not a control
+	# character, but still neutralized in the link text (real bytes kept
+	# in the href) since it can visually disguise the name in any renderer
+	expect resp.body ~ {href="evil%E2%80%AEgpj\.exe"}
+	expect resp.body ~ {>evil�gpj\.exe<}
+
+	# follow_links=true: symlinks are followed and show up like any other
+	# entry, matching the rest of this vmod's behavior in that mode
+	txreq -url "/dir/" -hdr "which: following"
+	rxresp
+	expect resp.status == 200
+	expect resp.body ~ "alink"
+	expect resp.body !~ {\.hidden}
+} -run

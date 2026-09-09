@@ -67,17 +67,91 @@ under `path` can point anywhere on disk and will be served,
 which can let a request escape `path` in a low-trust,
 multi-tenant setup.
 
+### Method `VOID <object>.index_file(STRING name)`
+
+Add `name` to the list of filenames tried, in the order they were
+added, when a request resolves to a directory.
+
+`name` must be a bare filename: it can't be an absolute path, and
+it can't contain a `/` (no subdirectories).
+
+Can only be called from `vcl_init`.
+
+### Method `VOID <object>.autoindex(BOOL on)`
+
+If `true`, a request that resolves to a directory with no
+matching `index_file` gets a generated directory listing instead
+of a 403. The format (HTML, JSON, or YAML) is chosen from the
+request's `accept` header, defaulting to HTML. A directory with
+more than 10,000 entries is truncated (an `x-fileserver-truncated:
+true` response header is added when this happens) -- the surviving
+entries are an arbitrary subset in directory order, not
+necessarily the first 10,000 alphabetically, since sorting only
+happens after the cap is applied.
+
+The listing is never cached (`cache-control: no-store`), since it
+can vary per-client (by `accept`) without bound. If unambiguous
+machine consumption matters, prefer the JSON format: YAML follows
+the YAML 1.2 Core Schema, so a filename like `no`/`yes`/`on`/`off`
+is emitted unquoted and a YAML *1.1* parser (e.g. Python's
+`yaml.safe_load`) will misread it as a boolean, not a string.
+
+Defaults to `false`. Has no effect if this build of the vmod was
+compiled without the `autoindex` Cargo feature (a directory with
+no matching `index_file` still gets a 403 either way).
+
+Can only be called from `vcl_init`.
+
+### Method `VOID <object>.autoindex_human_size(BOOL on)`
+
+If `true` (default), file sizes in a generated HTML directory
+listing are shown in a human-friendly form (e.g. `4.2K`), with
+the exact byte count available as a tooltip. If `false`, the
+exact byte count is shown directly, with no unit suffix (e.g.
+`4096`), matching nginx's `autoindex_exact_size` behavior.
+
+Only affects the HTML format (JSON/YAML always report the exact
+byte count, machine-readably). Has no effect if this build of
+the vmod was compiled without the `autoindex` Cargo feature.
+
+Can only be called from `vcl_init`.
+
+### Method `VOID <object>.autoindex_human_dates(BOOL on)`
+
+If `true` (default), last-modified dates in a generated HTML
+directory listing get a tooltip with the precise timestamp. If
+`false`, the tooltip is omitted.
+
+Either way the visible date uses the same format as nginx's own
+autoindex (e.g. `02-Sep-2026 17:18`).
+
+Only affects the HTML format (JSON/YAML always report the exact
+timestamp, machine-readably). Has no effect if this build of the
+vmod was compiled without the `autoindex` Cargo feature.
+
+Can only be called from `vcl_init`.
+
 ### Method `BACKEND <object>.backend()`
 
 Return the Varnish backend serving files under this object's root.
 
-- Only `GET` and `HEAD` requests are served; anything else gets a 405.
+- Only `GET` and `HEAD` requests are served; anything else gets a
+405. A non-UTF-8 request URL gets a 400; a non-UTF-8 method
+isn't `GET`/`HEAD` and so gets a 405.
 - The request URL's query string, if any, is ignored when
-resolving the file on disk.
-- A missing file returns 404; an unreadable one returns 403.
+resolving the file on disk. The path itself is percent-decoded;
+a malformed or unsafe percent-encoding gets a 400.
+- A missing file returns 404; an unreadable one returns 403; a
+FIFO, socket, or device is never opened and also returns 403.
 - Unless `follow_links` was set on the constructor, a request
-that hits a symlink anywhere in its path fails instead of
-being served.
+that hits a symlink anywhere in its path fails (503) instead
+of being served.
+- A request that resolves to a directory gets a 301 (adding a
+trailing slash) if it's missing one, otherwise the first
+matching `index_file`, a generated listing (if `autoindex` is
+on), or a 403. A trailing slash on a regular file gets a 404.
 - `etag`/`if-none-match` and `last-modified`/`if-modified-since`
-are supported. `etag` is derived from the file's inode, size,
-and modification time (if available).
+are supported for regular files (a generated listing carries
+neither, but does carry `vary: accept` and is never cached,
+since it can vary per-client without bound). `etag` is derived
+from the file's inode, size, and modification time (if available).

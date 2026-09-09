@@ -1,0 +1,85 @@
+varnishtest "autoindex generates a directory listing in HTML, JSON, or YAML"
+
+shell {
+	mkdir -p ${tmpdir}/dir
+	printf %s "hello" > ${tmpdir}/dir/afile.txt
+	mkdir -p ${tmpdir}/dir/asubdir
+	printf %s "space" > "${tmpdir}/dir/has space.txt"
+	mkdir -p "${tmpdir}/dir/sub dir"
+}
+
+varnish v1 -vcl {
+	import fileserver from "${vmod}";
+
+	backend default none;
+
+	sub vcl_init {
+		new www = fileserver.root("${tmpdir}");
+		www.autoindex(true);
+	}
+
+	sub vcl_recv {
+		set req.backend_hint = www.backend();
+		return (pass);
+	}
+} -start
+
+client c1 {
+	# missing/ambiguous accept -> HTML by default
+	txreq -url "/dir/"
+	rxresp
+	expect resp.status == 200
+	expect resp.http.content-type == "text/html; charset=utf-8"
+	# nginx/Apache-style listing: "Index of <path>" title, parent link, entries
+	expect resp.body ~ {Index of /dir/}
+	expect resp.body ~ {href="\.\./"}
+	expect resp.body ~ "afile.txt"
+	expect resp.body ~ "asubdir/"
+	# nginx-style: directories sort before files, even when the file name
+	# would otherwise sort first alphabetically ("afile.txt" < "asubdir")
+	expect resp.body ~ {asubdir/[\s\S]*afile\.txt}
+	# a filename with a space gets percent-encoded in the href, but shown
+	# as-is in the link text
+	expect resp.body ~ {href="has%20space.txt"}
+	expect resp.body ~ {>has space.txt<}
+	# a generated listing is never cached: it can vary per-client (accept)
+	# without bound, so caching it risks unbounded cache-variant growth
+	expect resp.http.cache-control == "no-store, max-age=0"
+	# well under MAX_LISTING_ENTRIES: no truncation header
+	expect resp.http.x-fileserver-truncated == <undef>
+
+	# the title shows the decoded path, matching how entry names are shown
+	# (not the percent-encoded form used for hrefs/Location)
+	txreq -url "/dir/sub%20dir/"
+	rxresp
+	expect resp.status == 200
+	expect resp.body ~ {Index of /dir/sub dir/}
+
+	txreq -url "/dir/" -hdr "accept: text/plain, */*"
+	rxresp
+	expect resp.status == 200
+	expect resp.http.content-type == "text/html; charset=utf-8"
+
+	# accept: application/json -> JSON listing
+	txreq -url "/dir/" -hdr "accept: application/json"
+	rxresp
+	expect resp.status == 200
+	expect resp.http.content-type == "application/json"
+	expect resp.body ~ "afile.txt"
+	expect resp.body ~ {"is_dir":true}
+	expect resp.body ~ {"size":5}
+
+	# accept: application/x-yaml -> YAML listing
+	txreq -url "/dir/" -hdr "accept: application/x-yaml"
+	rxresp
+	expect resp.status == 200
+	expect resp.http.content-type == "application/x-yaml"
+	expect resp.body ~ "afile.txt"
+
+	# HEAD gets the same headers but no body
+	txreq -method "HEAD" -url "/dir/"
+	rxresp
+	expect resp.status == 200
+	expect resp.http.content-type == "text/html; charset=utf-8"
+	expect resp.body == ""
+} -run

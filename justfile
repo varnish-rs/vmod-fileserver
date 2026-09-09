@@ -68,6 +68,13 @@ build:
 check:
     cargo check {{packages}} {{features}} {{targets}}
 
+# Build, lint, and test without the (default-on) `autoindex` feature, so that
+# build configuration doesn't silently bit-rot uncompiled and untested
+check-no-default-features:
+    cargo check {{packages}} --no-default-features {{targets}}
+    cargo clippy {{packages}} --no-default-features {{targets}}
+    cargo test {{packages}} --no-default-features --lib
+
 # Generate code coverage report to upload to codecov.io
 ci-coverage: env-info && \
             (coverage '--codecov --output-path target/llvm-cov/codecov.info')
@@ -75,7 +82,7 @@ ci-coverage: env-info && \
     mkdir -p target/llvm-cov
 
 # Run all tests as expected by CI
-ci-test: env-info test-fmt build clippy test && assert-git-is-clean
+ci-test: env-info test-fmt build clippy test check-no-default-features && assert-git-is-clean
 
 ci-test-trunk install_dir:
     #!/usr/bin/env bash

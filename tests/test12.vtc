@@ -1,0 +1,115 @@
+varnishtest "index_file/autoindex config methods are vcl_init-only, and index_file rejects paths"
+
+# index_file() can only be called from vcl_init -- caught at VCC compile time
+varnish v1 -errvcl "Not available in subroutine" {
+	vcl 4.1;
+	import fileserver from "${vmod}";
+	backend default none;
+	sub vcl_init {
+		new www = fileserver.root("${tmpdir}");
+	}
+	sub vcl_recv {
+		www.index_file("index.html");
+	}
+}
+
+# autoindex() can only be called from vcl_init -- caught at VCC compile time
+varnish v1 -errvcl "Not available in subroutine" {
+	vcl 4.1;
+	import fileserver from "${vmod}";
+	backend default none;
+	sub vcl_init {
+		new www = fileserver.root("${tmpdir}");
+	}
+	sub vcl_recv {
+		www.autoindex(true);
+	}
+}
+
+# autoindex_human_size() can only be called from vcl_init
+varnish v1 -errvcl "Not available in subroutine" {
+	vcl 4.1;
+	import fileserver from "${vmod}";
+	backend default none;
+	sub vcl_init {
+		new www = fileserver.root("${tmpdir}");
+	}
+	sub vcl_recv {
+		www.autoindex_human_size(false);
+	}
+}
+
+# autoindex_human_dates() can only be called from vcl_init
+varnish v1 -errvcl "Not available in subroutine" {
+	vcl 4.1;
+	import fileserver from "${vmod}";
+	backend default none;
+	sub vcl_init {
+		new www = fileserver.root("${tmpdir}");
+	}
+	sub vcl_recv {
+		www.autoindex_human_dates(false);
+	}
+}
+
+# index_file() rejects a value with a subdirectory -- this only runs (and
+# fails) once vcl_init actually executes in a worker process, so exercise it
+# with a standalone varnishd rather than varnishtest's own (workerless)
+# -errvcl, which only catches compile-time errors
+shell {
+	cat << EOF > ${tmpdir}/bad1.vcl
+vcl 4.1;
+import fileserver from "${vmod}";
+backend default none;
+sub vcl_init {
+	new www = fileserver.root("${tmpdir}");
+	www.index_file("sub/index.html");
+}
+EOF
+	if varnishd -n ${tmpdir}/wrk1 -a :0 -f ${tmpdir}/bad1.vcl -F > ${tmpdir}/out1.log 2>&1; then
+		echo "expected varnishd to fail to initialize, but it succeeded" >&2
+		cat ${tmpdir}/out1.log >&2
+		exit 1
+	fi
+	grep -q "must be a bare filename" ${tmpdir}/out1.log
+}
+
+# same, for an absolute path
+shell {
+	cat << EOF > ${tmpdir}/bad2.vcl
+vcl 4.1;
+import fileserver from "${vmod}";
+backend default none;
+sub vcl_init {
+	new www = fileserver.root("${tmpdir}");
+	www.index_file("/etc/passwd");
+}
+EOF
+	if varnishd -n ${tmpdir}/wrk2 -a :0 -f ${tmpdir}/bad2.vcl -F > ${tmpdir}/out2.log 2>&1; then
+		echo "expected varnishd to fail to initialize, but it succeeded" >&2
+		cat ${tmpdir}/out2.log >&2
+		exit 1
+	fi
+	grep -q "must be a bare filename" ${tmpdir}/out2.log
+}
+
+# same, for "..": harmless in practice (it can never match a real
+# candidate, see the is_dir() check in get_response) but still a config typo
+# worth rejecting up front
+shell {
+	cat << EOF > ${tmpdir}/bad3.vcl
+vcl 4.1;
+import fileserver from "${vmod}";
+backend default none;
+sub vcl_init {
+	new www = fileserver.root("${tmpdir}");
+	www.index_file("..");
+}
+EOF
+	if varnishd -n ${tmpdir}/wrk3 -a :0 -f ${tmpdir}/bad3.vcl -F > ${tmpdir}/out3.log 2>&1; then
+		echo "expected varnishd to fail to initialize, but it succeeded" >&2
+		cat ${tmpdir}/out3.log >&2
+		exit 1
+	fi
+	grep -q "must be a bare filename" ${tmpdir}/out3.log
+}

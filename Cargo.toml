@@ -6,10 +6,18 @@ edition = "2024"
 license = "BSD-3-Clause"
 publish = false
 
+[features]
+default = ["autoindex"]
+autoindex = ["dep:serde", "dep:serde_json", "dep:yaml_serde", "chrono/serde"]
+
 [dependencies]
 chrono = "0.4.45"
+libc = "0.2"
 openat = "0.1.21"
 varnish = { version = "0.7.0", features = ["ffi"] }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+yaml_serde = { version = "0.10", optional = true }
 
 [lib]
 crate-type = ["cdylib"]
