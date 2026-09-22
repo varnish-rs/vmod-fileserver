@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [0.1.1] - 2026-09-21
 
 ### Added
 
@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   instead of the symlink being followed.
 - `root()` now opens `path` at VCL-load time (unless `follow_links = true`)
   and fails loading if it doesn't exist, instead of only failing per-request.
+- `varnish-rs 0.8.0` dependency update
 
 ## [0.1.0] - 2026-08-10
 

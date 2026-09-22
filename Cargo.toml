@@ -1,6 +1,6 @@
 [package]
 name = "vmod_fileserver"
-version = "0.1.0"
+version = "0.1.1"
 rust-version = "1.90.0"
 edition = "2024"
 license = "BSD-3-Clause"
@@ -9,7 +9,7 @@ publish = false
 [dependencies]
 chrono = "0.4.45"
 openat = "0.1.21"
-varnish = { version = "0.7.0", features = ["ffi"] }
+varnish = { version = "0.8.0", features = ["ffi"] }
 
 [lib]
 crate-type = ["cdylib"]

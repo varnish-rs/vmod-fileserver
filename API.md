@@ -45,7 +45,7 @@ followed — see `follow_links` below.
 * `STRING path`:
 Root directory files are served from; request URLs are
 resolved relative to this path.
-* `[STRING mime_db]`:
+* `STRING mime_db` (optional):
 Path to a `mime.types`-style file, used to populate the
 `content-type` header from the request URL's extension.
 
@@ -56,7 +56,7 @@ silently ignored if it's missing or invalid.
 
 If the file has multiple entries for the same extension, the
 last one wins (matching nginx/Apache).
-* `BOOL follow_links`:
+* `BOOL follow_links` (optional, default: `0`):
 If `false` (default), every segment of a request's path is
 resolved without ever following a symlink (whether it points
 inside or outside `path`); a request that hits a symlink
